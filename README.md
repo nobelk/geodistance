@@ -128,7 +128,7 @@ curl -X POST -d '{
   "routingPreference":"TRAFFIC_AWARE",
   "requestedReferenceRoutes": ["SHORTER_DISTANCE"],
   "languageCode": "en-US"
-}' -H 'Content-Type: application/json' -H 'X-Goog-Api-Key: AIzaSyCEy8lyy1q1A0mLvPjhL0t0q7wNk2llc4o' -H 'X-Goog-FieldMask: routes.duration,routes.routeLabels,routes.distanceMeters' 'https://routes.googleapis.com/directions/v2:computeRoutes'
+}' -H 'Content-Type: application/json' -H 'X-Goog-Api-Key: your-api-key' -H 'X-Goog-FieldMask: routes.duration,routes.routeLabels,routes.distanceMeters' 'https://routes.googleapis.com/directions/v2:computeRoutes'
 {
   "routes": [
     {
