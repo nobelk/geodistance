@@ -12,7 +12,10 @@
 .idea/
 
 # env files
-#*.env
+*.env
+
+# executable/binary
+geodistance
 
 # Test binary, built with `go test -c`
 *.test

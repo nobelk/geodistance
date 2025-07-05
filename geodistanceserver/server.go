@@ -7,7 +7,7 @@ import (
 
 var Version = "dev"
 
-func NewGeodistanceServer() (*server.MCPServer, error) {
+func GeodistanceServer() (*server.MCPServer, error) {
 	h, err := NewGeodistanceHandler()
 	if err != nil {
 		return nil, err
@@ -21,21 +21,13 @@ func NewGeodistanceServer() (*server.MCPServer, error) {
 
 	s.AddTool(mcp.NewTool(
 		"calculate_distance",
-		mcp.WithDescription("Calculate distance between origin and destination."),
-		mcp.WithString("originLatitude",
-			mcp.Description("Latitude of origin"),
+		mcp.WithDescription("Calculate distance between origin and destination addresses."),
+		mcp.WithString("originAddress",
+			mcp.Description("Address of origin"),
 			mcp.Required(),
 		),
-		mcp.WithString("originLongitude",
-			mcp.Description("Longitude of Origin"),
-			mcp.Required(),
-		),
-		mcp.WithString("destinationLatitude",
-			mcp.Description("Latitude of destination"),
-			mcp.Required(),
-		),
-		mcp.WithString("destinationLongitude",
-			mcp.Description("Longitude of Destination"),
+		mcp.WithString("destinationAddress",
+			mcp.Description("Address of destination"),
 			mcp.Required(),
 		),
 	), h.handleDistanceCalculation)

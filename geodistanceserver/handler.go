@@ -8,57 +8,55 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-type LatLng struct {
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
-}
-
-type Location struct {
-	LatLng LatLng `json:"latLng"`
-}
-
-type Waypoint struct {
-	Location Location `json:"location"`
-}
-
-type RouteModifiers struct {
-	AvoidFerries bool `json:"avoid_ferries"`
-}
-
 type Origin struct {
-	Waypoint       Waypoint       `json:"waypoint"`
-	RouteModifiers RouteModifiers `json:"routeModifiers"`
+	Address string `json:"address"`
 }
 
 type Destination struct {
-	Waypoint Waypoint `json:"waypoint"`
+	Address string `json:"address"`
 }
 
 type RequestBody struct {
-	Origins           []Origin      `json:"origins"`
-	Destinations      []Destination `json:"destinations"`
-	TravelMode        string        `json:"travelMode"`
-	RoutingPreference string        `json:"routingPreference"`
+	Origins                  []Origin      `json:"origins"`
+	Destinations             []Destination `json:"destinations"`
+	TravelMode               string        `json:"travelMode"`
+	RoutingPreference        string        `json:"routingPreference"`
+	RequestedReferenceRoutes []string      `json:"requestedReferenceRoutes"`
+	LanguageCode             string        `json:"languageCode"`
 }
 
-type MatrixElement struct {
-	OriginIndex      int             `json:"originIndex"`
-	DestinationIndex int             `json:"destinationIndex"`
-	Status           json.RawMessage `json:"status"` // Use RawMessage if you don't care about details
-	DistanceMeters   int             `json:"distanceMeters"`
-	Duration         string          `json:"duration"` // format: "180s"
-	Condition        string          `json:"condition"`
+type ResponseBody struct {
+	Routes []Route `json:"routes"`
+}
+
+type Route struct {
+	DistanceMeters int      `json:"distanceMeters"`
+	Duration       string   `json:"duration"`
+	RouteLabels    []string `json:"routeLabels"`
+}
+
+// HTTPClient interface for testability
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
 }
 
 type GeodistanceHandler struct {
 	apiKey string
+	client HTTPClient
 }
 
 func NewGeodistanceHandler() (*GeodistanceHandler, error) {
+	return NewGeodistanceHandlerWithClient(&http.Client{
+		Timeout: 30 * time.Second,
+	})
+}
+
+func NewGeodistanceHandlerWithClient(client HTTPClient) (*GeodistanceHandler, error) {
 	// Load API key from environment variable
 	googleApiKey := os.Getenv("GOOGLE_API_KEY")
 	if googleApiKey == "" {
@@ -67,108 +65,136 @@ func NewGeodistanceHandler() (*GeodistanceHandler, error) {
 
 	return &GeodistanceHandler{
 		apiKey: googleApiKey,
+		client: client,
 	}, nil
 }
 
-func (gh *GeodistanceHandler) handleAddressDistanceCalculation(
+func (gh *GeodistanceHandler) handleDistanceCalculation(
 	ctx context.Context,
 	request mcp.CallToolRequest,
 ) (*mcp.CallToolResult, error) {
 	originAddress, err := request.RequireString("originAddress")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("missing origin address: %w", err)
 	}
+
 	destinationAddress, err := request.RequireString("destinationAddress")
 	if err != nil {
+		return nil, fmt.Errorf("missing destination address: %w", err)
+	}
+
+	if err := gh.validateAddresses(originAddress, destinationAddress); err != nil {
 		return nil, err
 	}
 
-	travelMode := "DRIVE"
-	routingPreference := "TRAFFIC_AWARE"
+	origins := []Origin{{Address: originAddress}}
+	destinations := []Destination{{Address: destinationAddress}}
+
+	responseBody, err := gh.callDistanceMatrix(ctx, origins, destinations)
+	if err != nil {
+		return nil, err
+	}
+
+	return gh.formatResponse(responseBody)
 }
 
-func (gh *GeodistanceHandler) handleLatLongDistanceCalculation(
-	ctx context.Context,
-	request mcp.CallToolRequest,
-) (*mcp.CallToolResult, error) {
-	originLatitude, err := request.RequireString("originLatitude")
-	if err != nil {
-		return nil, err
+func (gh *GeodistanceHandler) validateAddresses(origin, destination string) error {
+	if origin == "" {
+		return fmt.Errorf("origin address cannot be empty")
 	}
-	originLongitude, err := request.RequireString("originLongitude")
-	if err != nil {
-		return nil, err
+	if destination == "" {
+		return fmt.Errorf("destination address cannot be empty")
 	}
-
-	destinationLatitude, err := request.RequireString("destinationLatitude")
-	if err != nil {
-		return nil, err
-	}
-	destinationLongitude, err := request.RequireString("destinationLongitude")
-	if err != nil {
-		return nil, err
-	}
-
-	origins := []Origin{
-		{
-			Waypoint:       Waypoint{Location: Location{LatLng: LatLng{Latitude: originLatitude, Longitude: originLongitude}}},
-			RouteModifiers: RouteModifiers{AvoidFerries: true},
-		},
-	}
-	destinations := []Destination{
-		{
-			Waypoint: Waypoint{Location: Location{LatLng: LatLng{Latitude: destinationLatitude, Longitude: destinationLongitude}}},
-		},
-	}
-	travelMode := "DRIVE"
-	routingPreference := "TRAFFIC_AWARE"
+	return nil
 }
 
-func callDistanceMatrix(
-	origins []Origin,
-	destinations []Destination,
-	travelMode string,
-	routingPreference string,
-) ([]MatrixElement, error) {
-
-	body := RequestBody{
-		Origins:           origins,
-		Destinations:      destinations,
-		TravelMode:        travelMode,
-		RoutingPreference: routingPreference,
+func (gh *GeodistanceHandler) buildRequestBody(origins []Origin, destinations []Destination) *RequestBody {
+	return &RequestBody{
+		Origins:                  origins,
+		Destinations:             destinations,
+		TravelMode:               "DRIVE",
+		RoutingPreference:        "TRAFFIC_AWARE",
+		RequestedReferenceRoutes: []string{"SHORTER_DISTANCE"},
+		LanguageCode:             "en-US",
 	}
+}
 
+func (gh *GeodistanceHandler) createRequest(ctx context.Context, body *RequestBody) (*http.Request, error) {
 	jsonData, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal json: %w", err)
 	}
 
 	url := "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Goog-Api-Key", apiKey)
-	req.Header.Set("X-Goog-FieldMask", "originIndex,destinationIndex,duration,distanceMeters,status,condition")
+	req.Header.Set("X-Goog-Api-Key", gh.apiKey)
+	req.Header.Set("X-Goog-FieldMask", "routes.duration,routes.routeLabels,routes.distanceMeters")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
+	return req, nil
+}
+
+func (gh *GeodistanceHandler) processResponse(resp *http.Response) (*ResponseBody, error) {
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	var matrixElements []MatrixElement
-	if err := json.Unmarshal(bodyBytes, &matrixElements); err != nil {
+	var responseBody ResponseBody
+	if err := json.Unmarshal(bodyBytes, &responseBody); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	return matrixElements, nil
+	if len(responseBody.Routes) == 0 {
+		return nil, fmt.Errorf("no routes found in response")
+	}
+
+	return &responseBody, nil
+}
+
+func (gh *GeodistanceHandler) formatResponse(responseBody *ResponseBody) (*mcp.CallToolResult, error) {
+	if len(responseBody.Routes) == 0 {
+		return nil, fmt.Errorf("no routes available")
+	}
+
+	route := responseBody.Routes[0]
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			mcp.TextContent{
+				Type: "text",
+				Text: fmt.Sprintf("Route distance: %d meters, Duration: %s", route.DistanceMeters, route.Duration),
+			},
+		},
+	}, nil
+}
+
+func (gh *GeodistanceHandler) callDistanceMatrix(
+	ctx context.Context,
+	origins []Origin,
+	destinations []Destination,
+) (*ResponseBody, error) {
+	body := gh.buildRequestBody(origins, destinations)
+
+	req, err := gh.createRequest(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := gh.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+
+	return gh.processResponse(resp)
 }
